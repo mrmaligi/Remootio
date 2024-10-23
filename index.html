@@ -145,6 +145,9 @@
                     }
                 } else if (parsedMessage.type === 'ERROR') {
                     log('Error: ' + parsedMessage.errorMessage);
+                    if (parsedMessage.errorMessage === 'authentication error') {
+                        sessionAuthenticated = false;
+                    }
                 } else if (parsedMessage.type === 'PONG') {
                     log('Received PONG.');
                 } else {
@@ -161,6 +164,9 @@
             apiSessionKey = CryptoJS.enc.Base64.parse(challenge.challenge.sessionKey);
             lastActionId = challenge.challenge.initialActionId;
 
+            // Important: Convert lastActionId to integer
+            lastActionId = parseInt(lastActionId, 10);
+
             sessionAuthenticated = true;
 
             // Send QUERY action to complete authentication
@@ -173,7 +179,7 @@
                 return;
             }
 
-            lastActionId = (lastActionId + 1) % 0x7FFFFFFF;
+            lastActionId = (lastActionId + 1) % 0x80000000;
 
             const actionPayload = {
                 action: {
@@ -211,7 +217,7 @@
                 for (let i = 1; i <= count; i++) {
                     log(`Triggering relay: ${i}/${count}`);
 
-                    lastActionId = (lastActionId + 1) % 0x7FFFFFFF;
+                    lastActionId = (lastActionId + 1) % 0x80000000;
 
                     const actionPayload = {
                         action: {
@@ -341,8 +347,10 @@
                 return false;
             }
 
-            for (let i = 0; i < wordArray1.words.length; i++) {
-                if (wordArray1.words[i] !== wordArray2.words[i]) {
+            for (let i = 0; i < wordArray1.sigBytes; i++) {
+                const byte1 = (wordArray1.words[Math.floor(i / 4)] >> (24 - (i % 4) * 8)) & 0xff;
+                const byte2 = (wordArray2.words[Math.floor(i / 4)] >> (24 - (i % 4) * 8)) & 0xff;
+                if (byte1 !== byte2) {
                     return false;
                 }
             }
