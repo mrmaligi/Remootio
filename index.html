@@ -61,6 +61,7 @@
     <h2>Logs</h2>
     <div id="messages_log"></div>
 
+    <!-- Include CryptoJS library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <script>
         // Global variables
@@ -295,7 +296,7 @@
             const macCalculated = CryptoJS.HmacSHA256(macBase, CryptoJS.enc.Hex.parse(apiAuthKey));
             const macReceived = CryptoJS.enc.Base64.parse(encryptedFrame.mac);
 
-            if (!CryptoJS.lib.WordArray.isEqual(macCalculated, macReceived)) {
+            if (!wordArrayEquals(macCalculated, macReceived)) {
                 log('MAC verification failed.');
                 return null;
             }
@@ -323,13 +324,30 @@
 
             // Remove PKCS7 Padding
             const padding = decrypted.words[decrypted.words.length - 1] & 0xff;
-            const unpaddedDecrypted = CryptoJS.lib.WordArray.create(
-                decrypted.words,
-                decrypted.sigBytes - padding
-            );
+            const decryptedSigBytes = decrypted.sigBytes - padding;
+            decrypted.sigBytes = decryptedSigBytes >= 0 ? decryptedSigBytes : 0;
 
-            const decryptedString = CryptoJS.enc.Latin1.stringify(unpaddedDecrypted);
+            const decryptedString = CryptoJS.enc.Latin1.stringify(decrypted);
             return JSON.parse(decryptedString);
+        }
+
+        // Custom function to compare two WordArrays for equality
+        function wordArrayEquals(wordArray1, wordArray2) {
+            if (!wordArray1 || !wordArray2) {
+                return false;
+            }
+
+            if (wordArray1.sigBytes !== wordArray2.sigBytes) {
+                return false;
+            }
+
+            for (let i = 0; i < wordArray1.words.length; i++) {
+                if (wordArray1.words[i] !== wordArray2.words[i]) {
+                    return false;
+                }
+            }
+
+            return true;
         }
     </script>
 </body>
