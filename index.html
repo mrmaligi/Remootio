@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>Remootio Relay Trigger</title>
+    <style>
+        /* Basic styling */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 100px;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 8px;
+        }
+
+        button {
+            padding: 10px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+
+        #messages_log {
+            white-space: pre;
+            background-color: #f4f4f4;
+            padding: 10px;
+            max-height: 300px;
+            overflow-y: scroll;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Remootio Relay Trigger</h1>
+
+    <h2>Configuration</h2>
+    <p>Enter your Remootio API credentials and device IP address.</p>
+    <label for="api_secret_key">API Secret Key:</label>
+    <textarea id="api_secret_key"></textarea>
+
+    <label for="api_auth_key">API Auth Key:</label>
+    <textarea id="api_auth_key"></textarea>
+
+    <label for="device_ip">Remootio Device IP Address:</label>
+    <input type="text" id="device_ip" placeholder="e.g., 192.168.1.115">
+
+    <button onclick="connectToDevice()">Connect to Device</button>
+
+    <h2>Actions</h2>
+    <button onclick="authenticate()">Authenticate</button>
+    <button onclick="triggerRelayMultipleTimes(100)">Trigger Relay 100 Times</button>
+
+    <h2>Logs</h2>
+    <div id="messages_log"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script>
+        // Global variables
+        let ws;
+        let apiSecretKey;
+        let apiAuthKey;
+        let apiSessionKey;
+        let lastActionId;
+        let sessionAuthenticated = false;
+
+        function log(message) {
+            const logElement = document.getElementById('messages_log');
+            logElement.textContent += message + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(message);
+        }
+
+        function connectToDevice() {
+            const deviceIp = document.getElementById('device_ip').value.trim();
+            if (!deviceIp) {
+                alert('Please enter the device IP address.');
+                return;
+            }
+
+            const wsUrl = `ws://${deviceIp}:8080`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function () {
+                log('Connected to Remootio device.');
+            };
+
+            ws.onmessage = function (event) {
+                handleMessage(event.data);
+            };
+
+            ws.onclose = function () {
+                log('Disconnected from Remootio device.');
+                sessionAuthenticated = false;
+            };
+
+            ws.onerror = function (error) {
+                log('WebSocket error: ' + error);
+            };
+        }
+
+        function authenticate() {
+            apiSecretKey = document.getElementById('api_secret_key').value.trim();
+            apiAuthKey = document.getElementById('api_auth_key').value.trim();
+
+            if (!apiSecretKey || !apiAuthKey) {
+                alert('Please enter your API Secret Key and API Auth Key.');
+                return;
+            }
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('WebSocket is not connected.');
+                return;
+            }
+
+            // Send AUTH frame
+            const authFrame = JSON.stringify({ type: 'AUTH' });
+            ws.send(authFrame);
+            log('Sent AUTH frame: ' + authFrame);
+        }
+
+        function handleMessage(message) {
+            log('Received: ' + message);
+
+            try {
+                const parsedMessage = JSON.parse(message);
+
+                if (parsedMessage.type === 'ENCRYPTED') {
+                    const decryptedPayload = decryptMessage(parsedMessage);
+                    if (decryptedPayload.type === 'CHALLENGE') {
+                        handleChallenge(decryptedPayload);
+                    } else if (decryptedPayload.response) {
+                        handleResponse(decryptedPayload.response);
+                    } else {
+                        log('Unknown decrypted payload.');
+                    }
+                } else if (parsedMessage.type === 'ERROR') {
+                    log('Error: ' + parsedMessage.errorMessage);
+                } else if (parsedMessage.type === 'PONG') {
+                    log('Received PONG.');
+                } else {
+                    log('Unhandled message type: ' + parsedMessage.type);
+                }
+            } catch (e) {
+                log('Error parsing message: ' + e);
+            }
+        }
+
+        function handleChallenge(challenge) {
+            log('Received CHALLENGE.');
+
+            apiSessionKey = CryptoJS.enc.Base64.parse(challenge.challenge.sessionKey);
+            lastActionId = challenge.challenge.initialActionId;
+
+            sessionAuthenticated = true;
+
+            // Send QUERY action to complete authentication
+            sendQueryAction();
+        }
+
+        function sendQueryAction() {
+            if (!sessionAuthenticated) {
+                alert('Session is not authenticated.');
+                return;
+            }
+
+            lastActionId = (lastActionId + 1) % 0x7FFFFFFF;
+
+            const actionPayload = {
+                action: {
+                    type: 'QUERY',
+                    id: lastActionId
+                }
+            };
+
+            const encryptedFrame = createEncryptedFrame(actionPayload);
+            ws.send(encryptedFrame);
+            log('Sent QUERY action.');
+        }
+
+        function handleResponse(response) {
+            if (response.type === 'QUERY' && response.success) {
+                log('Authenticated successfully.');
+            } else if (response.type === 'TRIGGER') {
+                if (response.success) {
+                    log('Relay triggered successfully.');
+                } else {
+                    log('Failed to trigger relay: ' + response.errorCode);
+                }
+            } else {
+                log('Received response: ' + JSON.stringify(response));
+            }
+        }
+
+        function triggerRelayMultipleTimes(times) {
+            if (!sessionAuthenticated) {
+                alert('Session is not authenticated. Please authenticate first.');
+                return;
+            }
+
+            const triggerRelay = async (count) => {
+                for (let i = 1; i <= count; i++) {
+                    log(`Triggering relay: ${i}/${count}`);
+
+                    lastActionId = (lastActionId + 1) % 0x7FFFFFFF;
+
+                    const actionPayload = {
+                        action: {
+                            type: 'TRIGGER',
+                            id: lastActionId
+                        }
+                    };
+
+                    const encryptedFrame = createEncryptedFrame(actionPayload);
+                    ws.send(encryptedFrame);
+
+                    // Wait for response
+                    await waitForResponse();
+
+                    // Optional: Delay between triggers
+                    await delay(5000); // 5 seconds
+                }
+            };
+
+            triggerRelay(times);
+        }
+
+        function waitForResponse() {
+            return new Promise((resolve) => {
+                const originalHandler = ws.onmessage;
+
+                ws.onmessage = function (event) {
+                    handleMessage(event.data);
+                    ws.onmessage = originalHandler;
+                    resolve();
+                };
+            });
+        }
+
+        function delay(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        function createEncryptedFrame(payload) {
+            const payloadString = JSON.stringify(payload);
+            const payloadBytes = CryptoJS.enc.Latin1.parse(payloadString);
+
+            // PKCS7 Padding
+            const blockSize = 16;
+            const pad = blockSize - (payloadBytes.sigBytes % blockSize);
+            const paddingWordArray = CryptoJS.lib.WordArray.create(new Array(pad).fill(pad));
+            const paddedPayload = payloadBytes.concat(paddingWordArray);
+
+            // Generate random IV
+            const iv = CryptoJS.lib.WordArray.random(16);
+
+            // Encrypt payload
+            const encrypted = CryptoJS.AES.encrypt(paddedPayload, apiSessionKey, {
+                iv: iv,
+                mode: CryptoJS.mode.CBC,
+                padding: CryptoJS.pad.NoPadding
+            });
+
+            // Prepare data for MAC calculation
+            const data = {
+                iv: CryptoJS.enc.Base64.stringify(iv),
+                payload: CryptoJS.enc.Base64.stringify(encrypted.ciphertext)
+            };
+
+            const macBase = JSON.stringify(data);
+            const mac = CryptoJS.HmacSHA256(macBase, CryptoJS.enc.Hex.parse(apiAuthKey));
+
+            const encryptedFrame = JSON.stringify({
+                type: 'ENCRYPTED',
+                data: data,
+                mac: CryptoJS.enc.Base64.stringify(mac)
+            });
+
+            return encryptedFrame;
+        }
+
+        function decryptMessage(encryptedFrame) {
+            const data = encryptedFrame.data;
+
+            // Verify MAC
+            const macBase = JSON.stringify(data);
+            const macCalculated = CryptoJS.HmacSHA256(macBase, CryptoJS.enc.Hex.parse(apiAuthKey));
+            const macReceived = CryptoJS.enc.Base64.parse(encryptedFrame.mac);
+
+            if (!CryptoJS.lib.WordArray.isEqual(macCalculated, macReceived)) {
+                log('MAC verification failed.');
+                return null;
+            }
+
+            // Decrypt payload
+            const iv = CryptoJS.enc.Base64.parse(data.iv);
+            const ciphertext = CryptoJS.enc.Base64.parse(data.payload);
+
+            let key;
+            if (sessionAuthenticated) {
+                key = apiSessionKey;
+            } else {
+                key = CryptoJS.enc.Hex.parse(apiSecretKey);
+            }
+
+            const decrypted = CryptoJS.AES.decrypt(
+                { ciphertext: ciphertext },
+                key,
+                {
+                    iv: iv,
+                    mode: CryptoJS.mode.CBC,
+                    padding: CryptoJS.pad.NoPadding
+                }
+            );
+
+            // Remove PKCS7 Padding
+            const padding = decrypted.words[decrypted.words.length - 1] & 0xff;
+            const unpaddedDecrypted = CryptoJS.lib.WordArray.create(
+                decrypted.words,
+                decrypted.sigBytes - padding
+            );
+
+            const decryptedString = CryptoJS.enc.Latin1.stringify(unpaddedDecrypted);
+            return JSON.parse(decryptedString);
+        }
+    </script>
+</body>
+
+</html>
